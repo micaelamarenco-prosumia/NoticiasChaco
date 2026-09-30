@@ -72,6 +72,102 @@ SEGMENTOS_NO_NOTA = {
     "registro", "publicidad", "staff", "politica-de-privacidad", "feed", "rss",
 }
 
+# ---------------------------------------------------------------- filtro político provincial
+# Se busca en el título (y en el resumen, cuando el diario lo publica en su RSS).
+# No importan mayúsculas ni tildes. Un término que termina en * vale como prefijo (ej: "chaquen*").
+# Estas listas se pueden ampliar desde Telegram con /agregar y /excluir (ver /ayuda).
+FILTRO_ACTIVO = True
+
+# Alcanza con que aparezca uno de estos para que la nota pase.
+TERMINOS_FUERTES = [
+    # Ejecutivo
+    "zdero", "gobernador", "gobernadora", "vicegobernador", "vicegobernadora", "schneider",
+    "peche", "meiriño", "julio ferro", "julio ferró", "gabinete provincial", "gobierno provincial",
+    "gobierno del chaco", "ministro de gobierno", "casa de gobierno", "boletin oficial",
+    # Legislativo
+    "legislatura", "legislador*", "diputados provinciales", "diputado provincial", "diputada provincial",
+    "camara de diputados del chaco", "presupuesto provincial", "presupuesto 2027",
+    # Judicial
+    "poder judicial", "superior tribunal", "stj", "procurador general", "procuracion general",
+    "ministerio publico", "consejo de la magistratura", "jury de enjuiciamiento", "tribunal de cuentas",
+    "fiscalia de estado", "fiscal de estado",
+    # Empresas y organismos del Estado chaqueño
+    "sameep", "secheep", "nbch", "nuevo banco del chaco", "loteria chaqueña", "fiduciaria del norte",
+    "ecom", "ipduv", "instituto de vivienda", "insssep", "administracion tributaria provincial",
+    "vialidad provincial", "puerto barranqueras", "sefecha", "livio gutierrez",
+]
+
+# Diputados provinciales (Legislatura del Chaco, composición desde el 10/12/2025).
+# Apellidos poco comunes van solos; los comunes van con nombre, para no confundir con otras personas.
+LEGISLADORES = [
+    # Mandato 2025-2029 — Chaco Puede + / La Libertad Avanza
+    "julio ferro", "julio cesar ferro", "maggio", "zukiewicz", "botteri", "jorge gomez",
+    "jorge fernando gomez", "jarenko", "ivan garcia", "ivan joaquin garcia", "maria elena rodriguez",
+    # Mandato 2025-2029 — Frente Chaco Merece Más
+    "chomiak", "katia blanc", "moser", "insaurralde", "benitez molas", "lucas nass",
+    # Mandato 2025-2029 — Frente Primero Chaco (Laura Fogar reemplazó a Magda Ayala en agosto 2026)
+    "honcheruk", "fogar",
+    # Mandato 2023-2027
+    "bisonni", "blasco", "carmen delgado", "delgado britto", "gyoker", "salom", "samuel vargas",
+    "wannesson", "maida with", "cavana", "analia flores", "guillon", "perez pons", "slimel",
+    "cubells", "schwartz", "josefina gonzalez",
+]
+
+# Referentes políticos provinciales que no ocupan cargo en los tres poderes.
+REFERENTES = ["capitanich"]
+
+# Intendentes confirmados. Faltan municipios: se pueden sumar con /agregar o pidiéndolo para dejarlos fijos.
+INTENDENTES = [
+    "nikisch",                  # Resistencia
+    "cipolini",                 # Presidencia Roque Sáenz Peña
+    "magda ayala", "ciles ayala",  # Barranqueras
+    "mariela soto",             # Colonia Popular
+    "alicia leiva",             # Colonias Unidas
+    "liliana pascua",           # Enrique Urien
+    "ines ortega",              # Fuerte Esperanza
+    "stacchiotti",              # Gancedo
+    "acerbo",                   # General Capdevila
+    "mitoire",                  # La Eduvigis
+    "alba sanchez",             # La Tigra
+    "panzardi",                 # Laguna Blanca
+    "judith gomez",             # Los Frentones
+    "piccilli",                 # Pampa Almirón
+    "seifert",                  # Pampa del Infierno
+    "elba lezcano",             # Samuhú
+    "marcela duarte",           # Tres Isletas
+    # Adelaida Maggio (Santa Sylvina) ya está en la lista de legisladores.
+]
+
+# Estos solo pasan si además hay contexto chaqueño o si la nota no es claramente nacional.
+TERMINOS_DEBILES = [
+    "gobierno", "ministro", "ministra", "ministerio", "secretario", "secretaria", "subsecretari*",
+    "funcionari*", "diputad*", "senador*", "sesion", "proyecto de ley", "ley", "decreto",
+    "juez", "jueza", "jueces", "fiscal", "fiscalia", "tribunal", "camara", "oposicion", "oficialismo",
+    "presupuesto", "gestion", "licitacion", "obra publica", "paritaria*", "estatales", "docentes",
+    "intendente", "intendenta", "intendentes", "intendencia", "municipio", "municipios",
+    "municipalidad", "municipal", "concejo", "concejal*", "viceintendente", "viceintendenta",
+]
+
+CONTEXTO_CHACO = [
+    "chaco", "chaquen*", "resistencia", "barranqueras", "fontana", "vilelas", "saenz peña",
+    "villa angela", "castelli", "charata", "provincial", "provinciales",
+]
+
+# Si aparece uno de estos y NO hay contexto chaqueño, la nota se descarta.
+MARCAS_NACIONALES = [
+    "milei", "nacion", "nacional", "casa rosada", "congreso", "senado", "adorni", "caputo",
+    "bullrich", "kicillof", "francos", "karina milei", "anses", "indec", "arca", "afip", "bcra",
+    "banco central", "corte suprema", "fmi", "trump", "eeuu", "estados unidos", "buenos aires",
+    "cordoba", "santa fe", "corrientes", "mendoza", "papa leon",
+]
+
+# Si aparece uno de estos, la nota se descarta siempre.
+EXCLUIR_SIEMPRE = ["horoscopo", "quiniela", "receta", "farandula"]
+
+os.environ["TZ"] = "America/Argentina/Buenos_Aires"  # registros con hora de Argentina
+if hasattr(time, "tzset"):
+    time.tzset()
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s", datefmt="%d/%m %H:%M:%S")
 log = logging.getLogger("bot")
 
@@ -112,6 +208,47 @@ def clave_titulo(titulo):
     return "t:" + t[:90] if len(t) > 15 else None
 
 
+def simplificar(texto):
+    """minúsculas, sin tildes (conserva la ñ), sin signos."""
+    t = texto.lower().replace("ñ", "\0")
+    t = "".join(c for c in unicodedata.normalize("NFKD", t) if not unicodedata.combining(c))
+    t = t.replace("\0", "ñ")
+    return " " + " ".join(re.sub(r"[^\wñ]+", " ", t).split()) + " "
+
+
+def aparece(texto_simple, terminos):
+    for term in terminos:
+        term = simplificar(term).strip()
+        if not term:
+            continue
+        if term.endswith("*"):
+            if " " + term[:-1] in texto_simple:
+                return term
+        elif " " + term + " " in texto_simple:
+            return term
+    return None
+
+
+def pasa_filtro(titulo, resumen, estado):
+    """Devuelve (True/False, motivo)."""
+    f = estado["filtro"]
+    if not f.get("activo", FILTRO_ACTIVO):
+        return True, "filtro apagado"
+    texto = simplificar(f"{titulo} {resumen}")
+    if (t := aparece(texto, EXCLUIR_SIEMPRE + f["excluir"])):
+        return False, f"excluida por '{t}'"
+    if (t := aparece(texto, TERMINOS_FUERTES + LEGISLADORES + REFERENTES + INTENDENTES + f["incluir"])):
+        return True, t
+    debil = aparece(texto, TERMINOS_DEBILES)
+    if debil:
+        if aparece(texto, CONTEXTO_CHACO):
+            return True, debil
+        if not aparece(texto, MARCAS_NACIONALES):
+            return True, debil
+        return False, "nacional"
+    return False, "no es política provincial"
+
+
 # ---------------------------------------------------------------- estado
 def cargar_estado():
     estado = {}
@@ -123,6 +260,10 @@ def cargar_estado():
             estado = {}
     for k in ("vistos", "feeds", "fuentes_usadas", "fallos", "avisado"):
         estado.setdefault(k, {})
+    estado.setdefault("filtro", {})
+    estado["filtro"].setdefault("incluir", [])
+    estado["filtro"].setdefault("excluir", [])
+    estado.setdefault("telegram_offset", 0)
     return estado
 
 
@@ -166,7 +307,8 @@ def notas_desde_feed(feed_url, home):
     for e in reversed(d.entries if d else []):  # de la más vieja a la más nueva
         link = e.get("link")
         if link and dominio(link) == dominio(home):
-            notas.append((normalizar(link), link, (e.get("title") or "").strip()))
+            resumen = BeautifulSoup(e.get("summary") or "", "html.parser").get_text(" ", strip=True)[:500]
+            notas.append((normalizar(link), link, (e.get("title") or "").strip(), resumen))
     return notas
 
 
@@ -193,7 +335,7 @@ def notas_desde_portada(home):
         clave = normalizar(link)
         titulo = a.get_text(" ", strip=True) or a.get("title", "")
         if clave not in encontradas or len(titulo) > len(encontradas[clave][2]):
-            encontradas[clave] = (clave, link.split("#")[0], titulo)
+            encontradas[clave] = (clave, link.split("#")[0], titulo, "")
     return list(encontradas.values())
 
 
@@ -211,7 +353,7 @@ def notas_desde_google(home):
             titulo = titulo[: -len(fuente) - 3]
         link = e.get("link")
         if link:
-            notas.append((link, link, titulo))
+            notas.append((link, link, titulo, ""))
     return notas
 
 
@@ -247,6 +389,94 @@ def mostrar_chat_ids():
         print("No encontré mensajes. Mandale un mensaje al bot y volvé a correr esto.")
     for cid, nombre in chats.items():
         print(f"Chat id: {cid}   ({nombre})")
+
+
+AYUDA = (
+    "<b>Comandos del filtro</b>\n"
+    "/filtros – ver cómo está el filtro\n"
+    "/agregar palabra – que siempre pasen las notas con esa palabra o nombre\n"
+    "/excluir palabra – que nunca pasen las notas con esa palabra\n"
+    "/quitar palabra – sacar una palabra que agregaste o excluiste\n"
+    "/filtro_off – recibir todas las notas, sin filtrar\n"
+    "/filtro_on – volver a filtrar\n\n"
+    "Se pueden poner varias palabras: /agregar Carim Peche\n"
+    "Con * al final vale como comienzo de palabra: /excluir futbol*"
+)
+
+
+def texto_filtros(estado):
+    f = estado["filtro"]
+    activo = f.get("activo", FILTRO_ACTIVO)
+    inc = ", ".join(f["incluir"]) or "(ninguna)"
+    exc = ", ".join(EXCLUIR_SIEMPRE + f["excluir"])
+    return (
+        f"Filtro: <b>{'ACTIVADO' if activo else 'APAGADO'}</b>\n"
+        "Pasan las notas de política provincial: Ejecutivo, Legislatura, Poder Judicial "
+        "y empresas del Estado chaqueño.\n\n"
+        f"<b>Palabras que agregaste:</b> {html.escape(inc)}\n"
+        f"<b>Palabras excluidas:</b> {html.escape(exc)}\n\n/ayuda para ver los comandos"
+    )
+
+
+def procesar_comandos(estado):
+    """Lee los mensajes que le mandaste al bot y aplica los comandos del filtro."""
+    try:
+        r = requests.get(
+            f"https://api.telegram.org/bot{TOKEN}/getUpdates",
+            params={"offset": estado["telegram_offset"], "timeout": 0}, timeout=20,
+        ).json()
+    except Exception as e:
+        log.debug("No pude leer comandos: %s", e)
+        return
+    f = estado["filtro"]
+    for u in r.get("result", []):
+        estado["telegram_offset"] = u["update_id"] + 1
+        msg = u.get("message") or {}
+        if str(msg.get("chat", {}).get("id")) != str(CHAT_ID):
+            continue  # solo obedece a tu chat
+        texto = (msg.get("text") or "").strip()
+        if not texto.startswith("/"):
+            continue
+        comando, _, arg = texto.partition(" ")
+        comando = comando.split("@")[0].lower()
+        arg = arg.strip().lower()
+
+        if comando in ("/start", "/ayuda", "/help"):
+            enviar(AYUDA)
+        elif comando == "/filtros":
+            enviar(texto_filtros(estado))
+        elif comando == "/filtro_on":
+            f["activo"] = True
+            enviar("✅ Filtro activado.")
+        elif comando == "/filtro_off":
+            f["activo"] = False
+            enviar("⏸ Filtro apagado: te llegan todas las notas.")
+        elif comando in ("/agregar", "/excluir", "/quitar") and not arg:
+            enviar(f"Escribí la palabra después del comando. Ej: {comando} Zdero")
+        elif comando == "/agregar":
+            if arg in f["excluir"]:
+                f["excluir"].remove(arg)
+            if arg not in f["incluir"]:
+                f["incluir"].append(arg)
+            enviar(f"✅ Agregué «{html.escape(arg)}». Las notas que la mencionen te van a llegar.")
+        elif comando == "/excluir":
+            if arg in f["incluir"]:
+                f["incluir"].remove(arg)
+            if arg not in f["excluir"]:
+                f["excluir"].append(arg)
+            enviar(f"🚫 Excluí «{html.escape(arg)}». Las notas que la mencionen no te van a llegar.")
+        elif comando == "/quitar":
+            quitado = False
+            for lista in (f["incluir"], f["excluir"]):
+                if arg in lista:
+                    lista.remove(arg)
+                    quitado = True
+            enviar(f"🗑 Quité «{html.escape(arg)}»." if quitado else
+                   f"«{html.escape(arg)}» no estaba entre las palabras que agregaste o excluiste.")
+        else:
+            enviar("No conozco ese comando. /ayuda para ver la lista.")
+        log.info("Comando recibido: %s %s", comando, arg)
+    guardar_estado(estado)
 
 
 # ---------------------------------------------------------------- ciclo
@@ -308,21 +538,26 @@ def revisar(nombre, cfg, estado):
     primera_vez = fuente not in usadas  # primera vez con esta fuente: solo memorizar
 
     nuevas = []
-    for clave, link, titulo in notas:
+    for clave, link, titulo, resumen in notas:
         ct = clave_titulo(titulo)
         if clave in vistos or (ct and ct in vistos):
             continue
-        nuevas.append((clave, link, titulo, ct))
+        nuevas.append((clave, link, titulo, resumen, ct))
 
-    enviadas = 0
-    for clave, link, titulo, ct in nuevas:
+    enviadas = descartadas = 0
+    for clave, link, titulo, resumen, ct in nuevas:
         if not primera_vez:
-            cabecera = f"🗞 <b>{html.escape(nombre)}</b>"
-            texto = f"{cabecera}\n{html.escape(titulo)}\n{link}" if titulo else f"{cabecera}\n{link}"
-            if not enviar(texto):
-                continue  # no se marca como vista: se reintenta en la próxima vuelta
-            enviadas += 1
-            time.sleep(1.2)
+            pasa, motivo = pasa_filtro(titulo, resumen, estado)
+            if not pasa:
+                descartadas += 1
+                log.info("   descartada (%s): %s", motivo, titulo[:80])
+            else:
+                cabecera = f"🗞 <b>{html.escape(nombre)}</b>"
+                texto = f"{cabecera}\n{html.escape(titulo)}\n{link}" if titulo else f"{cabecera}\n{link}"
+                if not enviar(texto):
+                    continue  # no se marca como vista: se reintenta en la próxima vuelta
+                enviadas += 1
+                time.sleep(1.2)
         vistos_lista.append(clave)
         vistos.add(clave)
         if ct:
@@ -333,7 +568,8 @@ def revisar(nombre, cfg, estado):
         usadas.append(fuente)
         log.info("%s: primera lectura vía %s, %d notas memorizadas (no se envían)", nombre, fuente, len(nuevas))
     else:
-        log.info("%s: %d notas leídas vía %s, %d nuevas enviadas", nombre, len(notas), fuente, enviadas)
+        log.info("%s: %d notas leídas vía %s, %d nuevas enviadas, %d descartadas por el filtro",
+                 nombre, len(notas), fuente, enviadas, descartadas)
     estado["vistos"][nombre] = vistos_lista[-MAX_VISTOS_POR_SITIO:]
 
 
@@ -347,12 +583,14 @@ def main():
         sys.exit("Falta TELEGRAM_CHAT_ID. Corré: python main.py --chat-id")
 
     estado = cargar_estado()
-    enviar("✅ Bot de noticias del Chaco activo. Te aviso cada nota nueva.")
+    enviar("✅ Bot de noticias del Chaco activo. Te aviso las notas nuevas de política provincial.\n"
+           "Escribí /ayuda para ver cómo ajustar el filtro.")
     log.info("Monitoreando %d portales cada %d segundos (modo navegador: %s)",
              len(PORTALES), INTERVALO, "sí" if navegador else "no, falta curl_cffi")
 
     while True:
         for nombre, cfg in PORTALES.items():
+            procesar_comandos(estado)
             try:
                 revisar(nombre, cfg, estado)
             except Exception as e:
