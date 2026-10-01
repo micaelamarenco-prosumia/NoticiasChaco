@@ -34,6 +34,11 @@ try:  # imita a un navegador Chrome real: esquiva muchos bloqueos anti-bots
 except ImportError:
     navegador = None
 
+try:  # convierte los links de Google Noticias en el link original de la nota
+    from googlenewsdecoder import gnewsdecoder as googlenewsdecoder
+except ImportError:
+    googlenewsdecoder = None
+
 # ---------------------------------------------------------------- portales
 # "feeds": direcciones de RSS conocidas (si quedan vacías, el bot las busca solo)
 PORTALES = {
@@ -162,7 +167,38 @@ MARCAS_NACIONALES = [
 ]
 
 # Si aparece uno de estos, la nota se descarta siempre.
-EXCLUIR_SIEMPRE = ["horoscopo", "quiniela", "receta", "farandula"]
+EXCLUIR_SIEMPRE = [
+    "horoscopo", "quiniela", "receta", "farandula",
+    # Personas que no interesan
+    "infran", "valdes",
+    # Fútbol
+    "futbol*", "futbolist*", "gol", "goles", "golazo", "goleada", "goleador*", "hinchas", "hinchada",
+    "scaloni", "messi", "seleccion argentina", "albiceleste", "afa", "liga profesional",
+    "torneo federal", "primera nacional", "liga chaqueña", "copa libertadores", "copa sudamericana",
+    "copa argentina", "mundial 2026", "fichaje", "director tecnico", "boca juniors", "river plate",
+    "sarmiento de resistencia", "for ever",
+]
+
+# Pronóstico del tiempo: se descarta, salvo que la nota nombre a alguien del gobierno o a una
+# institución provincial (ej: "Zdero recorrió las zonas afectadas por las lluvias" sí pasa).
+CLIMA = [
+    "pronostico*", "clima", "climatic*", "meteorolog*", "smn", "temperatura*", "termometro",
+    "calor", "caluroso", "ola de calor", "frio", "fresco", "helada*", "lluvia*", "lloviznas",
+    "tormenta*", "chaparron*", "nublado", "despejado", "humedad", "viento*", "rafagas",
+    "alerta amarilla", "alerta naranja", "alerta roja", "alerta por", "como estara el tiempo",
+    "el tiempo en", "el tiempo para",
+]
+
+# Policiales: se descartan, salvo que la nota nombre a alguien del gobierno o a una institución
+# provincial (ej: "Zdero entregó patrulleros a la Policía" sí pasa).
+POLICIALES = [
+    "policia*", "comisaria", "detenid*", "detuvieron", "demorad*", "aprehendid*", "allanamiento*",
+    "robo", "robos", "robaron", "asalto", "asaltaron", "hurto", "motochorro*", "delincuente*",
+    "homicidio", "asesinato", "asesinad*", "crimen", "femicidio", "apuñal*", "baleado", "tiroteo",
+    "disparo*", "arma blanca", "abuso", "violacion", "secuestr*", "narco*", "droga*", "marihuana",
+    "cocaina", "estafa*", "accidente*", "choque", "chocaron", "siniestro vial", "atropell*", "vuelco",
+    "murio", "muerte", "cadaver", "hallaron muerto", "investigan", "imputad*", "prision preventiva",
+]
 
 os.environ["TZ"] = "America/Argentina/Buenos_Aires"  # registros con hora de Argentina
 if hasattr(time, "tzset"):
@@ -218,14 +254,15 @@ def simplificar(texto):
 
 def aparece(texto_simple, terminos):
     for term in terminos:
-        term = simplificar(term).strip()
-        if not term:
+        prefijo = term.strip().endswith("*")
+        t = simplificar(term).strip()
+        if not t:
             continue
-        if term.endswith("*"):
-            if " " + term[:-1] in texto_simple:
-                return term
-        elif " " + term + " " in texto_simple:
-            return term
+        if prefijo:
+            if " " + t in texto_simple:
+                return t + "*"
+        elif " " + t + " " in texto_simple:
+            return t
     return None
 
 
@@ -237,8 +274,13 @@ def pasa_filtro(titulo, resumen, estado):
     texto = simplificar(f"{titulo} {resumen}")
     if (t := aparece(texto, EXCLUIR_SIEMPRE + f["excluir"])):
         return False, f"excluida por '{t}'"
-    if (t := aparece(texto, TERMINOS_FUERTES + LEGISLADORES + REFERENTES + INTENDENTES + f["incluir"])):
-        return True, t
+    fuerte = aparece(texto, TERMINOS_FUERTES + LEGISLADORES + REFERENTES + INTENDENTES + f["incluir"])
+    if (p := aparece(texto, POLICIALES)) and not fuerte:
+        return False, f"policial ('{p}')"
+    if (c := aparece(texto, CLIMA)) and not fuerte:
+        return False, f"pronóstico/clima ('{c}')"
+    if fuerte:
+        return True, fuerte
     debil = aparece(texto, TERMINOS_DEBILES)
     if debil:
         if aparece(texto, CONTEXTO_CHACO):
@@ -355,6 +397,53 @@ def notas_desde_google(home):
         if link:
             notas.append((link, link, titulo, ""))
     return notas
+
+
+def link_real_de_google(link_google):
+    """Convierte el link de Google Noticias en el link original de la nota."""
+    if googlenewsdecoder is None:
+        return None
+    try:
+        r = googlenewsdecoder(link_google, interval=1, timeout=15)
+        ok = r.get("success", r.get("status"))  # según la versión de la librería
+        if ok and str(r.get("decoded_url", "")).startswith("http"):
+            return r["decoded_url"]
+        log.info("   no pude obtener el link original: %s", r.get("message", "")[:80])
+    except Exception as e:
+        log.info("   no pude obtener el link original: %s", str(e)[:80])
+    return None
+
+
+def titulo_de_la_nota(url):
+    """Lee el título completo desde la página de la nota (og:title, o el <h1>)."""
+    try:
+        soup = BeautifulSoup(descargar(url).text, "html.parser")
+    except Exception:
+        return None
+    for meta in (soup.find("meta", property="og:title"), soup.find("meta", attrs={"name": "twitter:title"})):
+        if meta and meta.get("content", "").strip():
+            return meta["content"].strip()
+    h1 = soup.find("h1")
+    if h1 and h1.get_text(strip=True):
+        return h1.get_text(" ", strip=True)
+    return None
+
+
+def completar_desde_google(nombre, link_google, titulo_google):
+    """Para notas leídas vía Google: devuelve (link original, título completo)."""
+    link = link_real_de_google(link_google) or link_google
+    titulo = None
+    if link != link_google:
+        titulo = titulo_de_la_nota(link)
+    if titulo:
+        # saca el nombre del diario si viene pegado al final: "Título | Diario Chaco"
+        m = re.match(r"^(.*\S)\s+[|–—-]\s+([^|–—-]{2,40})$", titulo)
+        if m:
+            sufijo = simplificar(m.group(2))
+            palabras_diario = set(simplificar(nombre + " " + dominio(link)).split()) - {"de", "del", "la", "com", "ar"}
+            if any(p in sufijo.split() for p in palabras_diario):
+                titulo = m.group(1)
+    return link, (titulo or titulo_google)
 
 
 # ---------------------------------------------------------------- Telegram
@@ -552,6 +641,15 @@ def revisar(nombre, cfg, estado):
                 descartadas += 1
                 log.info("   descartada (%s): %s", motivo, titulo[:80])
             else:
+                if fuente == "google":
+                    link, titulo = completar_desde_google(nombre, link, titulo)
+                    clave_real = normalizar(link)
+                    if clave_real in vistos:  # ya la habías recibido leyendo el diario directo
+                        vistos_lista.append(clave)
+                        vistos.add(clave)
+                        continue
+                    vistos_lista.append(clave_real)
+                    vistos.add(clave_real)
                 cabecera = f"🗞 <b>{html.escape(nombre)}</b>"
                 texto = f"{cabecera}\n{html.escape(titulo)}\n{link}" if titulo else f"{cabecera}\n{link}"
                 if not enviar(texto):
