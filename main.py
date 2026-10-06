@@ -9,6 +9,9 @@ Cómo funciona, para cada portal y en este orden:
 - La primera vez que lee un portal (o una fuente nueva de ese portal) solo memoriza
   lo publicado, para no inundarte de mensajes.
 - Si un portal falla muchas veces seguidas, te avisa por Telegram; y te avisa cuando se recupera.
+- Todos los días a las 9:00 manda un resumen ("Destacados") con las notas de política provincial
+  publicadas desde las 17:00 del día anterior, en un solo mensaje, dividido en
+  Sección 1 (Política / Elecciones) y Sección 2 (Gestión), sin notas repetidas entre portales.
 
 Configuración (variables de entorno, opcionales si ya están cargadas abajo):
   TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, INTERVALO_SEGUNDOS (por defecto 90)
@@ -23,6 +26,8 @@ import re
 import sys
 import time
 import unicodedata
+from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 from urllib.parse import urljoin, urlparse, urlunparse, parse_qsl, urlencode, quote
 
 import feedparser
@@ -200,6 +205,47 @@ POLICIALES = [
     "murio", "muerte", "cadaver", "hallaron muerto", "investigan", "imputad*", "prision preventiva",
 ]
 
+# ---------------------------------------------------------------- resumen diario ("Destacados")
+HORA_RESUMEN = int(os.getenv("HORA_RESUMEN", "9"))   # hora de envío (Argentina)
+HORA_INICIO_RESUMEN = 17                             # junta las notas desde las 17:00 del día anterior
+LARGO_MAXIMO_MENSAJE = 4000                          # Telegram corta en 4096; se deja margen
+
+# Si el título (o el comienzo del resumen) tiene alguno de estos, la nota va a la
+# SECCIÓN 1: Política / Elecciones. Todo lo demás va a la SECCIÓN 2: Gestión.
+# Incluye las críticas de la oposición a medidas de gestión.
+TERMINOS_POLITICA = [
+    # Elecciones
+    "eleccion*", "electoral*", "comicios", "candidat*", "precandidat*", "campaña", "boleta*",
+    "urnas", "escrutinio", "votantes", "padron", "encuesta*", "sondeo*",
+    "listas", "armado de listas", "encabeza la lista", "encabezara", "interna", "internas",
+    "alianza*", "frente electoral", "reeleccion", "postulacion", "postula*",
+    # Partidos y espacios
+    "pj", "peronismo", "peronista*", "justicialis*", "kirchner*", "ucr", "radicalismo",
+    "la libertad avanza", "lla", "libertari*", "partido*", "militancia", "militante*",
+    "oposicion", "opositor*", "oficialismo", "oficialista*", "bloque opositor", "bloque oficialista",
+    "capitanich",
+    # Dichos, cruces y críticas
+    "critico", "criticaron", "critica a", "criticas a", "duras criticas", "cuestiono", "cuestionaron",
+    "cuestionan", "cuestionamiento*", "apunto contra", "apuntaron contra", "apuntan contra",
+    "arremetio", "fustigo", "disparo contra", "cargo contra",
+    "rechazo", "rechazan", "rechazaron", "repudi*", "respondio a", "le respondio", "salio a responder",
+    "cruce", "se cruzaron", "chicana*", "polemica", "polemico", "reclamo al gobierno",
+]
+
+# Palabras que no se tienen en cuenta al comparar títulos entre portales.
+PALABRAS_VACIAS = set(
+    "a al ante bajo con contra de del desde durante e el en entre esta este hacia hasta la las le les "
+    "lo los mas para pero por que se sin sobre su sus tras un una unos unas y ya fue son es sera "
+    "como cual donde cuando muy tambien hoy ayer manana tras".split()
+)
+
+# Palabras con mayúscula que NO cuentan como "nombre propio distinto" al comparar títulos.
+MAYUSCULAS_COMUNES = set(
+    "gobierno provincia provincial estado ministerio ministro ministra legislatura municipio "
+    "municipalidad chaco gobernador gobernadora poder judicial ejecutivo camara concejo policia "
+    "banco nacion superior tribunal justicia diputados senado".split()
+)
+
 os.environ["TZ"] = "America/Argentina/Buenos_Aires"  # registros con hora de Argentina
 if hasattr(time, "tzset"):
     time.tzset()
@@ -266,10 +312,10 @@ def aparece(texto_simple, terminos):
     return None
 
 
-def pasa_filtro(titulo, resumen, estado):
-    """Devuelve (True/False, motivo)."""
+def pasa_filtro(titulo, resumen, estado, forzar=False):
+    """Devuelve (True/False, motivo). Con forzar=True filtra aunque el filtro esté apagado."""
     f = estado["filtro"]
-    if not f.get("activo", FILTRO_ACTIVO):
+    if not forzar and not f.get("activo", FILTRO_ACTIVO):
         return True, "filtro apagado"
     texto = simplificar(f"{titulo} {resumen}")
     if (t := aparece(texto, EXCLUIR_SIEMPRE + f["excluir"])):
@@ -306,6 +352,8 @@ def cargar_estado():
     estado["filtro"].setdefault("incluir", [])
     estado["filtro"].setdefault("excluir", [])
     estado.setdefault("telegram_offset", 0)
+    estado.setdefault("para_resumen", [])               # notas enviadas, para el resumen de las 9
+    estado.setdefault("registro_desde", time.time())    # desde cuándo el bot viene guardando notas
     return estado
 
 
@@ -447,9 +495,10 @@ def completar_desde_google(nombre, link_google, titulo_google):
 
 
 # ---------------------------------------------------------------- Telegram
-def enviar(texto):
+def enviar(texto, vista_previa=True):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    datos = {"chat_id": CHAT_ID, "text": texto, "parse_mode": "HTML", "disable_web_page_preview": False}
+    datos = {"chat_id": CHAT_ID, "text": texto, "parse_mode": "HTML",
+             "disable_web_page_preview": not vista_previa}
     for _ in range(5):
         try:
             r = requests.post(url, data=datos, timeout=20)
@@ -487,7 +536,8 @@ AYUDA = (
     "/excluir palabra – que nunca pasen las notas con esa palabra\n"
     "/quitar palabra – sacar una palabra que agregaste o excluiste\n"
     "/filtro_off – recibir todas las notas, sin filtrar\n"
-    "/filtro_on – volver a filtrar\n\n"
+    "/filtro_on – volver a filtrar\n"
+    "/resumen – mandar ahora el resumen de Destacados (desde las 17 h)\n\n"
     "Se pueden poner varias palabras: /agregar Carim Peche\n"
     "Con * al final vale como comienzo de palabra: /excluir futbol*"
 )
@@ -534,6 +584,12 @@ def procesar_comandos(estado):
             enviar(AYUDA)
         elif comando == "/filtros":
             enviar(texto_filtros(estado))
+        elif comando == "/resumen":
+            ahora = datetime.now()
+            desde = ahora.replace(hour=HORA_INICIO_RESUMEN, minute=0, second=0, microsecond=0)
+            if ahora < desde:
+                desde -= timedelta(days=1)
+            enviar_resumen(estado, desde, ahora)
         elif comando == "/filtro_on":
             f["activo"] = True
             enviar("✅ Filtro activado.")
@@ -566,6 +622,158 @@ def procesar_comandos(estado):
             enviar("No conozco ese comando. /ayuda para ver la lista.")
         log.info("Comando recibido: %s %s", comando, arg)
     guardar_estado(estado)
+
+
+# ---------------------------------------------------------------- resumen diario
+def guardar_para_resumen(estado, nombre, link, titulo, resumen):
+    lista = estado["para_resumen"]
+    lista.append({"t": time.time(), "diario": nombre, "link": link,
+                  "titulo": titulo or link, "resumen": (resumen or "")[:200]})
+    limite = time.time() - 3 * 86400  # guarda como máximo 3 días
+    estado["para_resumen"] = [n for n in lista if n["t"] >= limite]
+
+
+def seccion_de(nota):
+    texto = simplificar(f"{nota['titulo']} {nota.get('resumen', '')}")
+    return "politica" if aparece(texto, TERMINOS_POLITICA) else "gestion"
+
+
+def palabras_clave(titulo):
+    """Raíces (5 letras) de las palabras importantes: 'inauguró' e 'inauguraron' cuentan igual."""
+    return {w[:5] for w in simplificar(titulo).split() if w not in PALABRAS_VACIAS and len(w) > 2}
+
+
+def nombres_propios(titulo):
+    """Palabras con mayúscula en medio del título (lugares, personas): 'Fontana', 'Zdero'."""
+    if titulo.upper() == titulo:
+        return set()
+    nombres = set()
+    for m in re.finditer(r"\w+", titulo):
+        antes = titulo[:m.start()].rstrip()
+        if not antes or antes[-1] in ':."“”«»¡¿!?-–—|(':
+            continue  # comienzo de oración o de cita: la mayúscula no indica nombre propio
+        palabra = m.group()
+        w = simplificar(palabra).strip()
+        if palabra[0].isupper() and w not in PALABRAS_VACIAS and w not in MAYUSCULAS_COMUNES:
+            nombres.add(w)
+    return nombres
+
+
+def es_misma_noticia(a, b):
+    """Decide si dos notas (de portales distintos) cuentan la misma noticia."""
+    if normalizar(a["link"]) == normalizar(b["link"]):
+        return True
+    sa, sb = simplificar(a["titulo"]).strip(), simplificar(b["titulo"]).strip()
+    parecido = SequenceMatcher(None, sa, sb).ratio()
+    if parecido >= 0.9:
+        return True
+    ka, kb = palabras_clave(a["titulo"]), palabras_clave(b["titulo"])
+    if not ka or not kb:
+        return False
+    comunes = len(ka & kb)
+    if not (parecido >= 0.75 or (comunes >= 3 and comunes / min(len(ka), len(kb)) >= 0.6)):
+        return False
+    # Si cada título nombra un lugar o persona que el otro no (ej: "escuela en Fontana" y
+    # "escuela en Charata"), son noticias distintas aunque se parezcan.
+    solo_a = nombres_propios(a["titulo"]) - set(sb.split())
+    solo_b = nombres_propios(b["titulo"]) - set(sa.split())
+    return not (solo_a and solo_b)
+
+
+def largo_visible(texto_html):
+    return len(html.unescape(re.sub(r"<[^>]+>", "", texto_html)))
+
+
+def armar_resumen(notas, desde, hasta, aviso=""):
+    secciones = {"politica": [], "gestion": []}
+    for n in notas:
+        secciones[seccion_de(n)].append(n)
+
+    def item(n, modo):
+        titulo = n["titulo"]
+        if modo == "recortado" and len(titulo) > 90:
+            titulo = titulo[:87].rstrip() + "…"
+        if modo == "links":
+            return f"• {html.escape(titulo)}\n{html.escape(n['link'])}"
+        return f'• <a href="{html.escape(n["link"], quote=True)}">{html.escape(titulo)}</a>'
+
+    def texto(modo, pol, ges, sobran=0):
+        sep = "\n\n" if modo == "links" else "\n"
+        cuerpo_pol = sep.join(item(n, modo) for n in pol) or "<i>Sin novedades</i>"
+        cuerpo_ges = sep.join(item(n, modo) for n in ges) or "<i>Sin novedades</i>"
+        partes = [
+            f"📰 <b>DESTACADOS {hasta:%d/%m/%Y} - CHACO</b>",
+            f"<i>Notas del {desde:%d/%m %H:%M} al {hasta:%d/%m %H:%M}</i>" + (f"\n<i>{aviso}</i>" if aviso else ""),
+            f"🗳 <b>SECCIÓN 1: POLÍTICA / ELECCIONES</b>\n\n{cuerpo_pol}",
+            f"🏛 <b>SECCIÓN 2: GESTIÓN</b>\n\n{cuerpo_ges}",
+        ]
+        if sobran:
+            partes.append(f"<i>…y {sobran} notas más que no entraron en el mensaje.</i>")
+        return "\n\n".join(partes)
+
+    pol, ges = secciones["politica"], secciones["gestion"]
+    # 1° título + link a la vista; 2° si no entra, título con el link incorporado (se toca el título);
+    # 3° títulos recortados. Siempre en UN solo mensaje.
+    for modo in ("links", "con_link", "recortado"):
+        t = texto(modo, pol, ges)
+        if largo_visible(t) <= LARGO_MAXIMO_MENSAJE:
+            return t
+    # Último recurso (día muy cargado): se sacan las últimas notas de la sección más larga.
+    pol, ges, sobran = list(pol), list(ges), 0
+    while largo_visible(texto("recortado", pol, ges, sobran)) > LARGO_MAXIMO_MENSAJE and (pol or ges):
+        (pol if len(pol) >= len(ges) else ges).pop()
+        sobran += 1
+    return texto("recortado", pol, ges, sobran)
+
+
+def enviar_resumen(estado, desde, hasta):
+    t0, t1 = desde.timestamp(), hasta.timestamp()
+    notas = sorted((n for n in estado["para_resumen"] if t0 <= n["t"] <= t1), key=lambda n: n["t"])
+    unicas = []
+    for n in notas:  # se queda con la primera que apareció; las repetidas de otros portales se omiten
+        if not any(es_misma_noticia(n, u) for u in unicas):
+            unicas.append(n)
+    aviso = ""
+    if estado["registro_desde"] > t0:
+        aviso = (f"⚠️ El bot empezó a registrar notas a las "
+                 f"{datetime.fromtimestamp(estado['registro_desde']):%H:%M del %d/%m}: puede faltar alguna.")
+    ok = enviar(armar_resumen(unicas, desde, hasta, aviso), vista_previa=False)
+    log.info("Resumen Destacados: %d notas, %d repetidas omitidas, %s",
+             len(unicas), len(notas) - len(unicas), "enviado" if ok else "NO se pudo enviar")
+    return ok
+
+
+# Envío de prueba, una sola vez. Se puede borrar después (o dejar: no vuelve a mandarse).
+PRUEBA_RESUMEN = datetime(2026, 10, 6, 14, 30)
+
+
+def prueba_si_corresponde(estado):
+    ahora = datetime.now()
+    if estado.get("prueba_enviada") or ahora.date() != PRUEBA_RESUMEN.date() or ahora < PRUEBA_RESUMEN:
+        return
+    desde = (ahora - timedelta(days=1)).replace(hour=HORA_INICIO_RESUMEN, minute=0, second=0, microsecond=0)
+    if enviar_resumen(estado, desde, ahora):
+        estado["prueba_enviada"] = True
+        guardar_estado(estado)
+
+
+def resumen_si_corresponde(estado):
+    """Manda el resumen una vez por día, a partir de la HORA_RESUMEN (si el bot estuvo caído,
+    lo manda apenas vuelve, siempre que sea antes del mediodía)."""
+    ahora = datetime.now()
+    hoy = ahora.strftime("%Y-%m-%d")
+    if estado.get("ultimo_resumen") == hoy or not (HORA_RESUMEN <= ahora.hour < 12):
+        return
+    hora_envio = ahora.replace(hour=HORA_RESUMEN, minute=0, second=0, microsecond=0)
+    if estado["registro_desde"] > hora_envio.timestamp():
+        # el bot arrancó (o se redesplegó) después de las 9: el resumen de hoy ya salió
+        # o no tiene datos, así que no se manda para no duplicarlo
+        estado["ultimo_resumen"] = hoy
+        return
+    desde = (ahora - timedelta(days=1)).replace(hour=HORA_INICIO_RESUMEN, minute=0, second=0, microsecond=0)
+    if enviar_resumen(estado, desde, ahora):
+        estado["ultimo_resumen"] = hoy
+        guardar_estado(estado)
 
 
 # ---------------------------------------------------------------- ciclo
@@ -655,6 +863,8 @@ def revisar(nombre, cfg, estado):
                 if not enviar(texto):
                     continue  # no se marca como vista: se reintenta en la próxima vuelta
                 enviadas += 1
+                if pasa_filtro(titulo, resumen, estado, forzar=True)[0]:
+                    guardar_para_resumen(estado, nombre, link, titulo, resumen)
                 time.sleep(1.2)
         vistos_lista.append(clave)
         vistos.add(clave)
@@ -689,6 +899,11 @@ def main():
     while True:
         for nombre, cfg in PORTALES.items():
             procesar_comandos(estado)
+            try:
+                resumen_si_corresponde(estado)
+                prueba_si_corresponde(estado)
+            except Exception as e:
+                log.warning("No pude armar el resumen diario: %s", e)
             try:
                 revisar(nombre, cfg, estado)
             except Exception as e:
